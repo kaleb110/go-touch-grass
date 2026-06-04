@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 type FlagCfg struct {
@@ -34,7 +35,21 @@ func main()  {
 		os.Exit(1)
 	}
 
-	// bussiness logic.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("Error finding home dir: %v\n", err)
+		return
+	}
+	fullPath := filepath.Join(home, cfg.StateFile)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		fmt.Printf("Error creating storage dir: %v\n", err)
+		return
+	}
+
+	fmt.Println("Laptop usage tracker started...")
+
+
+	
 }
 
 // validate flag values
