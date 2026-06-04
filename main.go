@@ -2,6 +2,7 @@
 package gotouchgrass
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,12 @@ import (
 	"syscall"
 	"time"
 )
+
+// TrackingData is tracking object
+type TrackingData struct {
+	Date        string        `json:"date"`
+	ElapsedTime time.Duration `json:"elapsed_time"`
+}
 
 type FlagCfg struct {
 	StateFile    string // file to store state to
@@ -60,9 +67,82 @@ func main() {
 	ticker := time.NewTicker(intervalDuration)
 	defer ticker.Stop() // stop ticker on exit signal from sysd or ctrl+c
 
-	
-
 	// track time
+	trackTime(fullPath, intervalDuration, cfg.SimulateNext)
+
+	// loop untill there is a signal
+	for {
+		select {
+		case <-ticker.C:
+			trackTime(fullPath, intervalDuration, cfg.SimulateNext)
+		case <-stop:
+			fmt.Println("Shutting down tracker cleanly.")
+			trackTime(fullPath, intervalDuration, cfg.SimulateNext)
+			return
+		}
+	}
+
+}
+
+// trackTime initiated time tracking and writes to disk
+func trackTime(filePath string, tick time.Duration, simTomorrow bool) {
+	currentTime := time.Now()
+	if simTomorrow {
+		currentTime = currentTime.AddDate(0, 0, 1)
+	}
+	today := currentTime.Format("2006-01-02")
+
+	// store in slice, we can get history
+	var history []TrackingData
+
+	// try reading existing history file
+	fileBytes, err := os.ReadFile(filePath)
+	if err == nil {
+		err := json.Unmarshal(fileBytes, &history)
+		if err != nil {
+			fmt.Println("failed to parse, continued...")
+		}
+	}
+
+	// look to see if we already have an entry for today
+	// on reboot, login it will continue from last stored time
+	foundIndex := -1
+	for i, record := range history {
+		if record.Date == today {
+			foundIndex = i
+			break
+		}
+	}
+
+	if foundIndex != -1 {
+		// today already exists, just add the tick time to it
+		history[foundIndex].ElapsedTime += tick
+
+		// Print current stats
+		printStats(history[foundIndex])
+	} else {
+		// new day detected, Create a fresh record and append it to history
+		fmt.Printf("New day detected (%s). Starting new tracking record.\n", today)
+		newRecord := TrackingData{
+			Date:        today,
+			ElapsedTime: tick, // start with the initial tick
+		}
+		history = append(history, newRecord)
+
+		printStats(newRecord)
+	}
+
+	// write the entire updated history array back to disk
+	updatedBytes, err := json.MarshalIndent(history, "", "  ")
+	if err != nil {
+		fmt.Printf("Failed to marshal JSON: %v\n", err)
+		return
+	}
+
+	err = os.WriteFile(filePath, updatedBytes, 0644)
+	if err != nil {
+		fmt.Println("failed to update state. try again.")
+	}
 }
 
 // validate flag values
@@ -74,4 +154,12 @@ func validateFlag(cfg *FlagCfg) error {
 		return errors.New("tick interval must be greater than 0")
 	}
 	return nil
+}
+
+// helper to keep formatting clean
+func printStats(data TrackingData) {
+	hours := int(data.ElapsedTime.Hours())
+	minutes := int(data.ElapsedTime.Minutes()) % 60
+	seconds := int(data.ElapsedTime.Seconds()) % 60
+	fmt.Printf("Total laptop usage today (%s): %dh %dm %ds\n", data.Date, hours, minutes, seconds)
 }
