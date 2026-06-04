@@ -1,5 +1,11 @@
 go-touch-grass is a systemd background daemon for tracking daily time usage of your machine. reboot proof, persistant with history.
 
+## install
+
+```bash
+go install github.com/kaleb110/go-touch-grass@latest
+```
+
 ## setup (Linux, specifically debian)
 
 ### create systemd service in user space
