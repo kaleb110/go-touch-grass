@@ -6,13 +6,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
 type FlagCfg struct {
 	StateFile    string // file to store state to
-	TickInterval int // time to write to disk (as JSON)
-	SimulateNext bool // test tomorrow's rollover safely
+	TickInterval int    // time to write to disk (as JSON)
+	SimulateNext bool   // test tomorrow's rollover safely
 }
 
 const (
@@ -20,8 +23,8 @@ const (
 	defaultTickInterval = 60
 )
 
-func main()  {
-		cfg := &FlagCfg{}
+func main() {
+	cfg := &FlagCfg{}
 
 	flag.StringVar(&cfg.StateFile, "state", defaultStateFile, "state file path (JSON)")
 	flag.IntVar(&cfg.TickInterval, "tick", defaultTickInterval, "ticker interval in seconds")
@@ -48,8 +51,18 @@ func main()  {
 
 	fmt.Println("Laptop usage tracker started...")
 
+	// listen for signal
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	intervalDuration := time.Duration(cfg.TickInterval) * time.Second
+	ticker := time.NewTicker(intervalDuration)
+	defer ticker.Stop() // stop ticker on exit signal from sysd or ctrl+c
 
 	
+
+	// track time
 }
 
 // validate flag values
