@@ -1,0 +1,14 @@
+[Unit]
+Description='Track daily laptop usage time'
+After='default.target'
+
+[Service]
+Type='simple'
+ExecStart='%h/.local/bin/go-touch-grass'
+Restart='always'
+RestartSec=10
+StandardOutput='journal'
+StandardError='journal'
+
+[Install]
+WantedBy='default.target'
