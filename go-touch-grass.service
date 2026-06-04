@@ -1,14 +1,14 @@
 [Unit]
-Description='Track daily machine usage time'
-After='default.target'
+Description=Track daily machine usage time
+After=default.target
 
 [Service]
-Type='simple'
-ExecStart='%h/.local/bin/go-touch-grass'
-Restart='always'
+Type=simple
+ExecStart=%h/.local/bin/go-touch-grass
+Restart=always
 RestartSec=10
-StandardOutput='journal'
-StandardError='journal'
+StandardOutput=journal
+StandardError=journal
 
 [Install]
-WantedBy='default.target'
+WantedBy=default.target

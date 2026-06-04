@@ -1,5 +1,5 @@
 // Package gotouchgrass runs a cli app in the background
-package gotouchgrass
+package main
 
 import (
 	"encoding/json"

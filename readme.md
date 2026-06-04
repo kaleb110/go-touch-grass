@@ -6,7 +6,7 @@ go-touch-grass is a systemd background daemon for tracking daily time usage of y
 
 ```bash
 mkdir -p ~/.config/systemd/user/
-mv go-touch-grass.service ~/.config/systemd/user/go-touch-grass.service
+cp go-touch-grass.service ~/.config/systemd/user/go-touch-grass.service
 ```
 
 ### compile and move the binary 
