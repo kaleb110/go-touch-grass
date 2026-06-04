@@ -161,5 +161,5 @@ func printStats(data TrackingData) {
 	hours := int(data.ElapsedTime.Hours())
 	minutes := int(data.ElapsedTime.Minutes()) % 60
 	seconds := int(data.ElapsedTime.Seconds()) % 60
-	fmt.Printf("Total laptop usage today (%s): %dh %dm %ds\n", data.Date, hours, minutes, seconds)
+	fmt.Printf("Total machine usage today (%s): %dh %dm %ds\n", data.Date, hours, minutes, seconds)
 }

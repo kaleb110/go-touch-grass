@@ -1,5 +1,5 @@
 [Unit]
-Description='Track daily laptop usage time'
+Description='Track daily machine usage time'
 After='default.target'
 
 [Service]
