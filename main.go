@@ -14,6 +14,7 @@ import (
 
 // AppVersion represents the current build release version
 const AppVersion string = "1.0.2"
+
 // CurrentSchemaVersion keeps track of the JSON storage format style
 const CurrentSchemaVersion int = 1
 
@@ -32,9 +33,10 @@ type FlagCfg struct {
 	StateFile    string
 	TickInterval int
 	Report       string
+	FilterBy     string
 	Update       bool
 	SimulateNext bool
-	ShowVersion  bool // New flag
+	ShowVersion  bool
 }
 
 const (
@@ -43,9 +45,20 @@ const (
 )
 
 type ReportLength string
+
 const (
 	todayReport ReportLength = "today"
 	lastWeek    ReportLength = "lastWeek"
+	lastMonth   ReportLength = "lastMonth"
+	lastYear    ReportLength = "lastYear"
+	allTime     ReportLength = "allTime"
+)
+
+type FilterFormat string
+
+const (
+	totalTime FilterFormat = "total"
+	listTime  FilterFormat = "list"
 )
 
 func main() {
@@ -55,12 +68,12 @@ func main() {
 	flag.IntVar(&cfg.TickInterval, "tick", defaultTickInterval, "ticker interval in seconds")
 	flag.BoolVar(&cfg.Update, "update", false, "whether to start on updater mode or not")
 	flag.StringVar(&cfg.Report, "report", string(todayReport), "view report")
+	flag.StringVar(&cfg.FilterBy, "filter-by", string(listTime), "filter output by time format")
 	flag.BoolVar(&cfg.SimulateNext, "sim-tomorrow", false, "simulate tomorrow's date for testing rollover")
 	flag.BoolVar(&cfg.ShowVersion, "version", false, "print current binary version")
 
 	flag.Parse()
 
-	// Handle version print immediately before running validations
 	if cfg.ShowVersion {
 		fmt.Printf("go-touch-grass version %s (Schema v%d)\n", AppVersion, CurrentSchemaVersion)
 		return
@@ -165,9 +178,31 @@ func (f *FlagCfg) trackTime(filePath string, tick time.Duration) {
 			if start < 0 {
 				start = 0
 			}
-			for _, v := range envelope.History[start:] {
-				printStats(v)
+
+			f.printFilterBy(envelope.History[start:], currentTime)
+
+		case lastMonth:
+			start := len(envelope.History) - 30
+
+			if start < 0 {
+				start = 0
 			}
+
+			f.printFilterBy(envelope.History[start:], currentTime)
+
+		case lastYear:
+			start := len(envelope.History) - 365
+
+			if start < 0 {
+				start = 0
+			}
+
+			printStatsTotal(envelope.History[start:], currentTime)
+
+		case allTime:
+			start := 0
+
+			printStatsTotal(envelope.History[start:], currentTime)
 		}
 	}
 }
@@ -207,11 +242,29 @@ func (f *FlagCfg) validateFlag() error {
 		return errors.New("tick interval must be greater than 0")
 	}
 	switch ReportLength(f.Report) {
-	case todayReport, lastWeek:
+	case todayReport, lastWeek, lastMonth, lastYear, allTime:
+	default:
+		return fmt.Errorf("invalid report type: %v", f.Report)
+	}
+
+	switch FilterFormat(f.FilterBy) {
+	case totalTime, listTime:
 		return nil
 	default:
-		return errors.New("invalid report type")
+		return fmt.Errorf("invalid filter format: %v", f.FilterBy)
 	}
+}
+
+func (f *FlagCfg) printFilterBy(data []TrackingData, cur time.Time) {
+	if FilterFormat(f.FilterBy) == listTime {
+		for _, v := range data {
+			printStats(v)
+		}
+
+		return
+	}
+
+	printStatsTotal(data, cur)
 }
 
 func printStats(data TrackingData) {
@@ -219,4 +272,33 @@ func printStats(data TrackingData) {
 	minutes := int(data.ElapsedTime.Minutes()) % 60
 	seconds := int(data.ElapsedTime.Seconds()) % 60
 	fmt.Printf("Total machine usage (%s): %dh %dm %ds\n", data.Date, hours, minutes, seconds)
+}
+
+func printStatsTotal(data []TrackingData, curTime time.Time) {
+	var days, hours, minutes, seconds int
+
+	parsedTime, err := time.Parse(time.DateOnly, data[len(data)-1].Date)
+
+	if err == nil {
+		days += daysBetween(curTime, parsedTime)
+	}
+
+	for _, v := range data {
+		hours += int(v.ElapsedTime.Hours())
+		minutes += int(v.ElapsedTime.Minutes())
+		seconds += int(v.ElapsedTime.Seconds())
+	}
+
+	fmt.Printf("Total machine usage: %dd %dh %dm %ds\n", days, hours, minutes, seconds)
+}
+
+func daysBetween(a, b time.Time) int {
+	// Truncate both times to midnight in their respective locations
+	aMidnight := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, a.Location())
+	bMidnight := time.Date(b.Year(), b.Month(), b.Day(), 0, 0, 0, 0, b.Location())
+
+	// Subtraction here returns a duration, which we divide by 24 hours
+	// We add 0.5 to handle potential 23 or 25-hour DST days cleanly
+	hours := bMidnight.Sub(aMidnight).Hours()
+	return int(hours/24 + 0.5)
 }
