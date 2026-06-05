@@ -61,6 +61,6 @@ go build -o go-touch-grass bin/main.go # build
 ```-tick``` - ticker interval in seconds    
 ```-state``` - state file path (JSON)   
 ```-sim-tommorow``` - login as tommorow, for simulation   
-```-update``` - whether to start on updater mode or not
+```-update``` - whether to start on updater mode or not  
 ```-report``` - view report (today, lastWeek, lastMonth, lastYear, allTime)  
 ```-filter-by``` - output format - list by day or show total (list, total)
