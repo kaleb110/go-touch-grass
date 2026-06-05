@@ -4,7 +4,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/go-touch-grass
+ExecStart=%h/.local/bin/go-touch-grass -update
 Restart=always
 RestartSec=10
 StandardOutput=journal
