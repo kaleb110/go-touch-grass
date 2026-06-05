@@ -66,7 +66,7 @@ func main() {
 
 	flag.StringVar(&cfg.StateFile, "state", defaultStateFile, "state file path (JSON)")
 	flag.IntVar(&cfg.TickInterval, "tick", defaultTickInterval, "ticker interval in seconds")
-	flag.BoolVar(&cfg.Update, "update", false, "whether to start on updater mode or not")
+	flag.BoolVar(&cfg.Update, "update", false, "whether to start on updater mode or not")  
 	flag.StringVar(&cfg.Report, "report", string(todayReport), "view report")  
 	flag.StringVar(&cfg.FilterBy, "filter-by", string(listTime), "filter output by time format")
 	flag.BoolVar(&cfg.SimulateNext, "sim-tomorrow", false, "simulate tomorrow's date for testing rollover")
