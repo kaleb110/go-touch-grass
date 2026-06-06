@@ -52,11 +52,13 @@ cat ~/.local/share/go-touch-grass/state.json
 ```bash
 go build -o go-touch-grass bin/main.go # build
 
-./bin/go-touch-grass -tick=2 # run 
-./bin/go-touch-grass -tick=2 -sim-tommorow # simulation for tommorow
+./bin/go-touch-grass tracker -tick=2 # run 
+./bin/go-touch-grass tracker -tick=2 -sim-tommorow # simulation for tommorow
 ```
 
 ## flag options
+
+subcommand - ```tracker```
 
 ```-tick``` - ticker interval in seconds    
 ```-state``` - state file path (JSON)   
