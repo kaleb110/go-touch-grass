@@ -33,8 +33,11 @@ func (a *App) Run() error {
 		return fmt.Errorf("no subcommand provided")
 	}
 
-	// Handle standard global help flags: `app --help` or `app -h`
-	if os.Args[1] == "--help" || os.Args[1] == "-h" {
+	switch os.Args[1] {
+	case "--version", "-v":
+		fmt.Printf("go-touch-grass version v%s\n", AppVersion)
+		return nil
+	case "--help", "-h":
 		a.PrintUsage()
 		return nil
 	}
@@ -69,6 +72,9 @@ func (a *App) Run() error {
 // PrintUsage prints the top-level application help menu
 func (a *App) PrintUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: go-touch-grass <subcommand> [flags]\n")
+	fmt.Fprintf(os.Stderr, "\nGlobal Options:\n")
+	fmt.Fprintf(os.Stderr, "  -v, --version  Print version info\n")
+	fmt.Fprintf(os.Stderr, "  -h, --help     Print application help\n")
 	fmt.Fprintf(os.Stderr, "\nAvailable subcommands:\n")
 	for _, cmd := range a.commands {
 		fmt.Fprintf(os.Stderr, "  %-12s %s\n", cmd.Name(), cmd.Description())
