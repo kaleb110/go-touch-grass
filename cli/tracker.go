@@ -1,308 +1,262 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/kaleb110/go-touch-grass/report"
+	"github.com/kaleb110/go-touch-grass/store"
+	"github.com/kaleb110/go-touch-grass/tui"
 )
 
-const (
-	defaultStateFile    = ".local/share/go-touch-grass/state.json"
-	defaultTickInterval = 60
-)
-
-type TrackingData struct {
-	Date        string        `json:"date"`
-	ElapsedTime time.Duration `json:"elapsed_time"`
-}
-
-// StateEnvelope acts as the outer container to protect backward compatibility
-type StateEnvelope struct {
-	SchemaVersion int            `json:"schema_version"`
-	History       []TrackingData `json:"history"`
-}
-
+// TrackerCMD implements the `tracker` subcommand.
 type TrackerCMD struct {
-	StateFile    string
-	TickInterval int
-	Report       string
-	FilterBy     string
-	Update       bool
-	SimulateNext bool
-	ShowVersion  bool
+	stateFile    string
+	tickInterval int
+	reportType   string
+	filterBy     string
+	update       bool
+	globalGoal   *int // nil = unset
+	dailyGoal    int
+	simulateNext bool
+	showVersion  bool
 }
 
 func NewTracker() *TrackerCMD {
 	return &TrackerCMD{}
 }
 
-func (tc *TrackerCMD) Name() string {
-	return "tracker"
-}
+func (tc *TrackerCMD) Name() string        { return "tracker" }
+func (tc *TrackerCMD) Description() string { return "track machine usage" }
 
-func (tc *TrackerCMD) Description() string {
-	return "track machine usage"
-}
-
-func (tc *TrackerCMD) Init(args []string) (*flag.FlagSet, error) {
+func (tc *TrackerCMD) Init(args []string) error {
 	fs := flag.NewFlagSet(tc.Name(), flag.ExitOnError)
 
-	// attack the flags to local flag group
-	fs.StringVar(&tc.StateFile, "state", defaultStateFile, "state file path (JSON)")
-	fs.IntVar(&tc.TickInterval, "tick", defaultTickInterval, "ticker interval in seconds")
-	fs.BoolVar(&tc.Update, "update", false, "whether to start on updater mode or not")
-	fs.StringVar(&tc.Report, "report", string(report.TodayReport), "view report")
-	fs.StringVar(&tc.FilterBy, "filter-by", string(report.ListTime), "filter output by time format")
-	fs.BoolVar(&tc.SimulateNext, "sim-tomorrow", false, "simulate tomorrow's date for testing rollover")
-	fs.BoolVar(&tc.ShowVersion, "version", false, "print current binary version")
+	fs.StringVar(&tc.stateFile, "state", store.DefaultStateFile, "state file path (JSON)")
+	fs.IntVar(&tc.tickInterval, "tick", 60, "ticker interval in seconds")
+	fs.BoolVar(&tc.update, "update", false, "run as the daemon updater")
+	fs.StringVar(&tc.reportType, "report", "", "report range: today|lastWeek|lastMonth|lastYear|allTime")
+	fs.StringVar(&tc.filterBy, "filter-by", string(report.FilterList), "filter for multi-day reports: total|list")
+	var globalGoalVal int
+	fs.IntVar(&globalGoalVal, "global-goal", 0, "global goal in hours (e.g. 3)")
+	fs.IntVar(&tc.dailyGoal, "daily-goal", 0, "set today's goal in hours (e.g. 5)")
+	fs.BoolVar(&tc.simulateNext, "sim-tomorrow", false, "simulate tomorrow's date for testing rollover")
+	fs.BoolVar(&tc.showVersion, "version", false, "print current binary version")
 
-	// Hook custom usage into Go's native flag framework
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: app %s [flags]\n", tc.Name())
-		fmt.Fprintf(os.Stderr, "\nFlags:\n")
-		fs.PrintDefaults() // Prints this subcommand flags formatting automatically
+		fmt.Fprintf(os.Stderr, "Usage: go-touch-grass %s [flags]\n\nFlags:\n", tc.Name())
+		fs.PrintDefaults()
 	}
 
-	return fs, nil
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "global-goal" && globalGoalVal > 0 {
+			v := globalGoalVal
+			tc.globalGoal = &v
+		}
+	})
+
+	return tc.validate()
+}
+
+func (tc *TrackerCMD) validate() error {
+	if tc.stateFile == "" {
+		return errors.New("empty file path")
+	}
+	if tc.tickInterval <= 0 {
+		return errors.New("tick interval must be greater than 0")
+	}
+	if tc.globalGoal != nil && *tc.globalGoal <= 0 {
+		return errors.New("global goal must be greater than 0")
+	}
+	if tc.reportType != "" && !report.ParseLength(tc.reportType).Valid() {
+		return fmt.Errorf("invalid report type: %s", tc.reportType)
+	}
+	if !report.ParseFilter(tc.filterBy).Valid() {
+		return fmt.Errorf("invalid filter format: %s", tc.filterBy)
+	}
+	return nil
 }
 
 func (tc *TrackerCMD) Run() error {
-	if tc.ShowVersion {
-		fmt.Printf("go-touch-grass version %s (Schema v%d)\n", AppVersion, CurrentSchemaVersion)
+	if tc.showVersion {
+		fmt.Printf("go-touch-grass version %s (Schema v%d)\n", AppVersion, store.SchemaVersion)
 		return nil
 	}
 
-	if err := tc.validateFlag(); err != nil {
-		fmt.Fprintf(os.Stderr, "Validation error: %v\n\n", err)
-		// TODO: show usage
-		return nil
-	}
-
-	home, err := os.UserHomeDir()
+	path, err := store.ResolvePath(tc.stateFile)
 	if err != nil {
-		return fmt.Errorf("error finding home dir: %v", err)
+		return err
 	}
-	fullPath := filepath.Join(home, tc.StateFile)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return fmt.Errorf("error creating storage dir: %v", err)
+	if err := store.EnsureDir(path); err != nil {
+		return fmt.Errorf("error creating storage dir: %w", err)
 	}
 
-	// Early exit for reporting viewer (read-only mode)
-	if !tc.Update {
-		tc.trackTime(fullPath, time.Duration(tc.TickInterval)*time.Second)
+	if !tc.update {
+		tc.tickOnce(path, 0)
 		return nil
 	}
 
-	/* running in update mode, should be the task of systemd service */
+	return tc.runDaemon(path)
+}
 
-	fmt.Println("Machine usage tracker started...")
+// runDaemon is the long-running service loop.
+func (tc *TrackerCMD) runDaemon(path string) error {
+	fmt.Printf("Machine usage tracker started... [Store: %s]\n", path)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	intervalDuration := time.Duration(tc.TickInterval) * time.Second
-	ticker := time.NewTicker(intervalDuration)
+	interval := time.Duration(tc.tickInterval) * time.Second
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
-	// start tracking
-	tc.trackTime(fullPath, intervalDuration)
-
-	/* listen for interuptions/tick */
 
 	for {
 		select {
 		case <-ticker.C:
-			tc.trackTime(fullPath, intervalDuration)
+			tc.tickOnce(path, interval)
 		case <-stop:
-			fmt.Println("Shutting down tracker cleanly.")
-			tc.trackTime(fullPath, intervalDuration)
+			fmt.Println("\nShutting down tracker cleanly.")
+			tc.tickOnce(path, interval)
 			return nil
 		}
 	}
 }
 
-func (tc *TrackerCMD) validateFlag() error {
-	if tc.StateFile == "" {
-		return errors.New("empty file path")
+// tickOnce performs one load → mutate → save cycle. When delta is non-zero
+// (daemon mode) it adds elapsed time; when delta is zero (display mode) it
+// only reads and renders.
+func (tc *TrackerCMD) tickOnce(path string, delta time.Duration) {
+	now := time.Now()
+	if tc.simulateNext {
+		now = now.AddDate(0, 0, 1)
 	}
-	if tc.TickInterval <= 0 {
-		return errors.New("tick interval must be greater than 0")
-	}
-	switch report.ReportLength(tc.Report) {
-	case report.TodayReport, report.LastWeek, report.LastMonth, report.LastYear, report.AllTime:
-	default:
-		return fmt.Errorf("invalid report type: %v", tc.Report)
-	}
+	today := now.Format(time.DateOnly)
 
-	switch report.FilterFormat(tc.FilterBy) {
-	case report.TotalTime, report.ListTime:
-		return nil
-	default:
-		return fmt.Errorf("invalid filter format: %v", tc.FilterBy)
-	}
-}
-
-func (f *TrackerCMD) trackTime(filePath string, tick time.Duration) {
-	currentTime := time.Now()
-	if f.SimulateNext {
-		currentTime = currentTime.AddDate(0, 0, 1)
-	}
-	today := currentTime.Format("2006-01-02")
-
-	// Read state using the migration-safe parsing utility
-	envelope, err := loadStateAndMigrate(filePath)
+	env, err := store.Load(path)
 	if err != nil {
-		fmt.Printf("State initialization error: %v, continuing with fresh slate...\n", err)
-		envelope = &StateEnvelope{SchemaVersion: CurrentSchemaVersion, History: []TrackingData{}}
+		fmt.Printf("State error: %v — continuing with fresh slate.\n", err)
+		env = store.Default()
 	}
 
-	foundIndex := -1
-	for i, record := range envelope.History {
-		if record.Date == today {
-			foundIndex = i
-			break
+	// Apply a live global-goal override.
+	if tc.globalGoal != nil {
+		target := time.Duration(*tc.globalGoal) * time.Hour
+		if env.GlobalGoal != target {
+			env.GlobalGoal = target
+			_ = store.Save(path, env)
 		}
 	}
 
-	if f.Update {
-		if foundIndex != -1 {
-			envelope.History[foundIndex].ElapsedTime += tick
-			printStats(envelope.History[foundIndex])
-		} else {
-			fmt.Printf("New day detected (%s). Starting new tracking record.\n", today)
-			newRecord := TrackingData{Date: today, ElapsedTime: tick}
-			envelope.History = append(envelope.History, newRecord)
-			printStats(newRecord)
-		}
+	idx := env.FindToday(today)
 
-		// Write unified updated envelope structures directly back to filesystems
-		updatedBytes, err := json.MarshalIndent(envelope, "", "  ")
-		if err != nil {
-			fmt.Printf("failed to marshal JSON payload: %v\n", err)
-			return
-		}
-		_ = os.WriteFile(filePath, updatedBytes, 0644)
+	// Daemon mode: accumulate time and persist.
+	if tc.update {
+		tc.recordTick(env, path, idx, today, delta)
 		return
 	}
 
-	// Read-only reporting logic
-	if foundIndex != -1 {
-		switch report.ReportLength(f.Report) {
-		case report.TodayReport:
-			printStats(envelope.History[foundIndex])
-		case report.LastWeek:
-			start := len(envelope.History) - 7
-			if start < 0 {
-				start = 0
-			}
+	// Display mode.
+	tc.render(env, idx, today, now)
+}
 
-			f.printFilterBy(envelope.History[start:], currentTime)
-
-		case report.LastMonth:
-			start := len(envelope.History) - 30
-
-			if start < 0 {
-				start = 0
-			}
-
-			f.printFilterBy(envelope.History[start:], currentTime)
-
-		case report.LastYear:
-			start := len(envelope.History) - 365
-
-			if start < 0 {
-				start = 0
-			}
-
-			printStatsTotal(envelope.History[start:], currentTime)
-
-		case report.AllTime:
-			start := 0
-
-			printStatsTotal(envelope.History[start:], currentTime)
+func (tc *TrackerCMD) recordTick(env *store.Envelope, path string, idx int, today string, delta time.Duration) {
+	goalDur := time.Duration(tc.dailyGoal) * time.Hour
+	if idx >= 0 {
+		env.History[idx].ElapsedTime += delta
+		if goalDur > 0 {
+			env.History[idx].DailyGoal = goalDur
 		}
+		report.PrintDay(env.History[idx])
+	} else {
+		fmt.Printf("New day detected (%s). Starting new tracking record.\n", today)
+		rec := store.TrackingData{Date: today, ElapsedTime: delta, DailyGoal: goalDur}
+		env.History = append(env.History, rec)
+		report.PrintDay(rec)
+	}
+	if err := store.Save(path, env); err != nil {
+		fmt.Printf("failed to save state: %v\n", err)
 	}
 }
 
-// loadStateAndMigrate intercepts raw data logs and maps legacy layouts forward seamlessly
-func loadStateAndMigrate(filePath string) (*StateEnvelope, error) {
-	fileBytes, err := os.ReadFile(filePath)
+func (tc *TrackerCMD) render(env *store.Envelope, idx int, today string, now time.Time) {
+	var tracked store.TrackingData
+	if idx >= 0 {
+		tracked = env.History[idx]
+	} else {
+		tracked = store.TrackingData{Date: today, DailyGoal: time.Duration(tc.dailyGoal) * time.Hour}
+	}
+
+	switch report.ParseLength(tc.reportType) {
+	case report.Today:
+		report.PrintDay(tracked)
+	case report.Week, report.Month:
+		sub := report.Range(env.History, report.ParseLength(tc.reportType))
+		report.PrintMulti(sub, report.ParseFilter(tc.filterBy), now)
+	case report.Year, report.All:
+		sub := report.Range(env.History, report.ParseLength(tc.reportType))
+		report.PrintTotal(sub, now)
+	default:
+		elapsed := tracked.ElapsedTime
+		goal := tc.targetGoal(tracked, env)
+		username, host := hostInfo()
+		tui.RenderDashboard(username, host, elapsed, goal)
+	}
+}
+
+// targetGoal resolves the effective goal in priority order:
+// runtime flags → per-day record → persisted global → default.
+func (tc *TrackerCMD) targetGoal(record store.TrackingData, env *store.Envelope) time.Duration {
+	if tc.dailyGoal > 0 {
+		return time.Duration(tc.dailyGoal) * time.Hour
+	}
+	if tc.globalGoal != nil {
+		return time.Duration(*tc.globalGoal) * time.Hour
+	}
+	if record.DailyGoal > 0 {
+		return record.DailyGoal
+	}
+	if env.GlobalGoal > 0 {
+		return env.GlobalGoal
+	}
+	return store.DefaultGlobalGoal
+}
+
+func hostInfo() (username, host string) {
+	host = "localhost"
+	if h, err := os.Hostname(); err == nil {
+		host = h
+	}
+	username = "user"
+	if u, err := user.Current(); err == nil {
+		username = u.Username
+	}
+	return username, host
+}
+
+// installPaths returns the conventional user-local install locations used by
+// the install command and by the generated unit file.
+// installPaths returns the conventional user-local install locations used by
+// the install command and by the generated unit file. name is the installed
+// binary name (and systemd unit stem), defaulting to "go-touch-grass".
+func installPaths(name string) (binDir, binPath, unitPath string, err error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return &StateEnvelope{SchemaVersion: CurrentSchemaVersion, History: []TrackingData{}}, nil
+		return "", "", "", fmt.Errorf("finding home dir: %w", err)
 	}
-
-	// Step A: Attempt to parse file as an Envelope structure (v1.1+)
-	var env StateEnvelope
-	if err := json.Unmarshal(fileBytes, &env); err == nil && env.SchemaVersion > 0 {
-		return &env, nil
-	}
-
-	// Step B: FALLBACK FOR BACKWARD COMPATIBILITY
-	// If it fails, the user is upgrading from v1.0.0 where the file was a plain array (`[]TrackingData`).
-	var legacyHistory []TrackingData
-	if err := json.Unmarshal(fileBytes, &legacyHistory); err == nil {
-		fmt.Println("Migrating legacy state history schema file to v1 schema protocol...")
-		return &StateEnvelope{
-			SchemaVersion: CurrentSchemaVersion,
-			History:       legacyHistory,
-		}, nil
-	}
-
-	return nil, errors.New("unknown file format or corrupted structure")
-}
-
-func (f *TrackerCMD) printFilterBy(data []TrackingData, cur time.Time) {
-	if report.FilterFormat(f.FilterBy) == report.ListTime {
-		for _, v := range data {
-			printStats(v)
-		}
-
-		return
-	}
-
-	printStatsTotal(data, cur)
-}
-
-func printStats(data TrackingData) {
-	hours := int(data.ElapsedTime.Hours())
-	minutes := int(data.ElapsedTime.Minutes()) % 60
-	seconds := int(data.ElapsedTime.Seconds()) % 60
-	fmt.Printf("Total machine usage (%s): %dh %dm %ds\n", data.Date, hours, minutes, seconds)
-}
-
-func printStatsTotal(data []TrackingData, curTime time.Time) {
-	var days, hours, minutes, seconds int
-
-	parsedTime, err := time.Parse(time.DateOnly, data[len(data)-1].Date)
-
-	if err == nil {
-		days += daysBetween(curTime, parsedTime)
-	}
-
-	for _, v := range data {
-		hours += int(v.ElapsedTime.Hours())
-		minutes += int(v.ElapsedTime.Minutes())
-		seconds += int(v.ElapsedTime.Seconds())
-	}
-
-	fmt.Printf("Total machine usage: %dd %dh %dm %ds\n", days, hours, minutes, seconds)
-}
-
-func daysBetween(a, b time.Time) int {
-	// Truncate both times to midnight in their respective locations
-	aMidnight := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, a.Location())
-	bMidnight := time.Date(b.Year(), b.Month(), b.Day(), 0, 0, 0, 0, b.Location())
-
-	// Subtraction here returns a duration, which we divide by 24 hours
-	// We add 0.5 to handle potential 23 or 25-hour DST days cleanly
-	hours := bMidnight.Sub(aMidnight).Hours()
-	return int(hours/24 + 0.5)
+	binDir = filepath.Join(home, ".local", "bin")
+	binPath = filepath.Join(binDir, name)
+	unitDir := filepath.Join(home, ".config", "systemd", "user")
+	unitPath = filepath.Join(unitDir, name+".service")
+	return binDir, binPath, unitPath, nil
 }
